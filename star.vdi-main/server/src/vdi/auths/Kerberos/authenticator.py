@@ -1,0 +1,650 @@
+import base64, logging, os, tempfile, typing
+
+import gssapi, ldap
+
+from django.urls import reverse
+from django.utils.translation import gettext
+from django.utils.translation import gettext_noop as _
+
+
+from vdi.core import auths, exceptions
+from vdi.core.managers.crypto import CryptoManager
+from vdi.core.util.request import ExtendedHttpRequest
+from vdi.core.ui import gui
+from vdi.core.util import ldaputil
+from vdi.models import getSqlDatetime
+
+# Not imported at runtime, just for type checking
+if typing.TYPE_CHECKING:
+    from django.http import HttpRequest
+
+    from vdi.core.util.request import ExtendedHttpRequestWithUser
+
+logger = logging.getLogger(__name__)
+
+LDAP_RESULT_LIMIT = 100
+KERBEROS_PATH = '/svol/kerberos'
+
+
+class KerberosAuthenticator(auths.Authenticator):
+    """
+    This class represents the SAML Authenticator
+    """
+
+    # : Name of type, used at administration interface to identify this
+    # : authenticator (i.e. LDAP, SAML, ...)
+    # : This string will be translated when provided to admin interface
+    # : using gettext, so you can mark it as "_" at derived classes (using gettext_noop)
+    # : if you want so it can be translated.
+    typeName = _('Kerberos Authenticator')
+
+    # : Name of type used by Managers to identify this type of service
+    # : We could have used here the Class name, but we decided that the
+    # : module implementator will be the one that will provide a name that
+    # : will relation the class (type) and that name.
+    typeType = 'KerberosAuthenticator'
+
+    # : Description shown at administration level for this authenticator.
+    # : This string will be translated when provided to admin interface
+    # : using gettext, so you can mark it as "_" at derived classes (using gettext_noop)
+    # : if you want so it can be translated.
+    typeDescription = _('Kerberos Authenticator')
+
+    # : Icon file, used to represent this authenticator at administration interface
+    # : This file should be at same folder as this class is, except if you provide
+    # : your own :py:meth:vdi.core.module.BaseModule.icon method.
+    iconFile = 'auth.png'
+
+    # : Mark this authenticator as that the users comes from outside the VDI
+    # : database, that are most authenticator (except Internal DB)
+    # : True is the default value, so we do not need it in fact
+
+    # : If we need to enter the password for this user when creating a new
+    # : user at administration interface. Used basically by internal authenticator.
+    # : False is the default value, so this is not needed in fact
+    # : needs_password = False
+
+    # : Label for username field, shown at administration interface user form.
+    userNameLabel = _('User')
+
+    # Label for group field, shown at administration interface user form.
+    groupNameLabel = _('Group')
+
+    # : Definition of this type of authenticator form
+    # : We will define a simple form where we will use a simple
+    # : list editor to allow entering a few group names
+
+    spn = gui.TextField(
+        length=256,
+        label=_('SPN'),
+        order=2,
+        tooltip=_('Service Principal Name'),
+        required=True,
+    )
+    keytab = gui.TextField(
+        length=8192,
+        multiline=4,
+        label=_('Keytab in base64'),
+        order=3,
+        tooltip=_('Keytab file in base64 format'),
+        required=True,
+    )
+    host = gui.TextField(
+        length=256,
+        label=_('Host'),
+        order=4,
+        tooltip=_('Ldap Server IP or Hostname'),
+        required=True,
+    )
+    timeout = gui.NumericField(
+        length=3,
+        label=_('Timeout'),
+        defvalue='10',
+        order=5,
+        tooltip=_('Timeout in seconds of connection to LDAP'),
+        required=True,
+        minValue=1,
+    )
+    ssl = gui.CheckBoxField(
+        label=_('Use SSL'),
+        order=6,
+        tooltip=_(
+            'If checked, the connection will be ssl, using port 636 instead of 389'
+        ),
+        defvalue=gui.TRUE,
+    )
+    ldapBase = gui.TextField(
+        length=64,
+        label=_('Base'),
+        order=30,
+        tooltip=_('Common search base (used for "users" and "groups")'),
+        required=True,
+        tab=_('Ldap info'),
+    )
+    userClass = gui.TextField(
+        length=64,
+        label=_('User class'),
+        defvalue='posixAccount',
+        order=31,
+        tooltip=_('Class for LDAP users (normally posixAccount)'),
+        required=True,
+        tab=_('Ldap info'),
+    )
+    userIdAttr = gui.TextField(
+        length=64,
+        label=_('User Id Attr'),
+        defvalue='uid',
+        order=32,
+        tooltip=_('Attribute that contains the user id'),
+        required=True,
+        tab=_('Ldap info'),
+    )
+    userNameAttr = gui.TextField(
+        length=64,
+        label=_('User Name Attr'),
+        defvalue='uid',
+        order=33,
+        tooltip=_(
+            'Attributes that contains the user name (list of comma separated values)'
+        ),
+        required=True,
+        tab=_('Ldap info'),
+    )
+    groupClass = gui.TextField(
+        length=64,
+        label=_('Group class'),
+        defvalue='posixGroup',
+        order=34,
+        tooltip=_('Class for LDAP groups (normally poxisGroup)'),
+        required=True,
+        tab=_('Ldap info'),
+    )
+    groupIdAttr = gui.TextField(
+        length=64,
+        label=_('Group Id Attr'),
+        defvalue='cn',
+        order=35,
+        tooltip=_('Attribute that contains the group id'),
+        required=True,
+        tab=_('Ldap info'),
+    )
+    memberAttr = gui.TextField(
+        length=64,
+        label=_('Group membership attr'),
+        defvalue='memberUid',
+        order=36,
+        tooltip=_('Attribute of the group that contains the users belonging to it'),
+        required=True,
+        tab=_('Ldap info'),
+    )
+
+    _connection: typing.Any = None
+    _host: str = ''
+    _ssl: bool = False
+    _spn: str = ''
+    _keytab: str = ''
+    _timeout: str = ''
+    _ldapBase: str = ''
+    _userClass: str = ''
+    _groupClass: str = ''
+    _userIdAttr: str = ''
+    _groupIdAttr: str = ''
+    _memberAttr: str = ''
+    _userNameAttr: str = ''
+
+    def initialize(self, values: typing.Optional[typing.Dict[(str, typing.Any)]]) -> None:
+        if values:
+            self._spn = values['spn']
+            self._keytab = values['keytab']
+            self._host = values['host']
+            self._timeout = values['timeout']
+            self._ssl = gui.strToBool(values['ssl'])
+            self._ldapBase = values['ldapBase']
+            self._userClass = values['userClass']
+            self._groupClass = values['groupClass']
+            self._userIdAttr = values['userIdAttr']
+            self._groupIdAttr = values['groupIdAttr']
+            self._memberAttr = values['memberAttr']
+            self._userNameAttr = values['userNameAttr']
+
+    def valuesDict(self) -> gui.ValuesDictType:
+        return {
+            'host': self._host,
+            'spn': self._spn,
+            'keytab': self._keytab,
+            'timeout': self._timeout,
+            'ssl': gui.boolToStr(self._ssl),
+            'ldapBase': self._ldapBase,
+            'userClass': self._userClass,
+            'groupClass': self._groupClass,
+            'userIdAttr': self._userIdAttr,
+            'groupIdAttr': self._groupIdAttr,
+            'memberAttr': self._memberAttr,
+            'userNameAttr': self._userNameAttr,
+            # 'mfaAttr': self._mfaAttr,
+            # 'verifySsl': gui.boolToStr(self._verifySsl),
+            # 'certificate': self._certificate,
+        }
+
+    def marshal(self) -> bytes:
+        return '\t'.join(
+            [
+                'v2',
+                self._host,
+                self._spn,
+                self._keytab,
+                self._timeout,
+                gui.boolToStr(self._ssl),
+                self._ldapBase,
+                self._userClass,
+                self._groupClass,
+                self._userIdAttr,
+                self._groupIdAttr,
+                self._memberAttr,
+                self._userNameAttr,
+                # self._mfaAttr,
+                # gui.boolToStr(self._verifySsl),
+                # self._certificate.strip(),
+            ]
+        ).encode('utf8')
+
+    def unmarshal(self, data: bytes):
+        vals = data.decode('utf8').split('\t')
+        # self._verifySsl = False  # Backward compatibility
+        # self._mfaAttr = ''  # Backward compatibility
+        # self._certificate = ''  # Backward compatibility
+
+        logger.debug("Data: %s", vals[1:])
+        (
+            self._host,
+            self._spn,
+            self._keytab,
+            self._timeout,
+            ssl,
+            self._ldapBase,
+            self._userClass,
+            self._groupClass,
+            self._userIdAttr,
+            self._groupIdAttr,
+            self._memberAttr,
+            self._userNameAttr,
+        ) = vals[1:]
+        self._ssl = gui.strToBool(ssl)
+
+        # if vals[0]  == 'v2':
+        #     (
+        #         self._mfaAttr,
+        #         verifySsl,
+        #         self._certificate
+        #     ) = vals[14:17]
+        #     self._verifySsl = gui.strToBool(verifySsl)
+
+    def __get_keytab_filename(self):
+        if not self.dbAuthenticator():
+            return os.path.join(tempfile.gettempdir(), 'krb5.keytab')
+        else:
+            logger.debug('we have uuid: %s', self.dbAuthenticator().uuid)
+            return os.path.join(KERBEROS_PATH, f'{self.dbAuthenticator().uuid}.keytab')
+
+    def __create_keytab(self, keytab_filename):
+        with open(keytab_filename, 'wb') as f:
+            f.write(base64.b64decode(self._keytab))
+
+    def __check_keytab(self, keytab_filename:str):
+        if not os.path.isfile(keytab_filename):
+            self.__create_keytab()
+        else:
+            with open(keytab_filename, 'rb') as f:
+                current_keytab = f.read()
+            if current_keytab != base64.b64decode(self._keytab):
+                logger.debug('Saved keytab is different. Need to update it from DB')
+                self.__create_keytab()
+
+    def __get_credentials(self, usage:str) -> gssapi.Credentials:
+        try:
+            keytab_filename = self.__get_keytab_filename()
+            self.__check_keytab(keytab_filename)
+            service_name = gssapi.Name(self._spn)
+            if usage == 'accept':
+                credentials = gssapi.Credentials(name=service_name, usage=usage, store={'keytab':keytab_filename})
+            else:
+                os.system('kdestroy')
+                credentials = gssapi.Credentials(name=service_name, usage=usage, store={'client_keytab':keytab_filename})
+            logger.debug('cred name: %s', str(credentials.name))
+        except Exception as e:
+            raise auths.exceptions.AuthenticatorException('Problem with keytab file or SPN: ' + str(e))
+        return credentials
+
+    def __connection(self):
+        """
+        Tries to connect to ldap with Kerberos credentials.
+        @return: Connection established
+        @raise exception: If connection could not be established
+        """
+        if self._connection is None:  # We are not connected
+            self.__get_credentials(usage='initiate')
+            self._connection = ldaputil.sasl_connection(
+                self._host,
+                ssl=self._ssl,
+                timeout=int(self._timeout),
+                debug=False,
+            )
+        return self._connection
+    
+    def __getUser(self, username: str) -> typing.Optional[ldaputil.LDAPResultType]:
+        """
+        Searchs for the username and returns its LDAP entry
+        @param username: username to search, using user provided parameters at configuration to map search entries.
+        @return: None if username is not found, an dictionary of LDAP entry attributes if found.
+        @note: Active directory users contains the groups it belongs to in "memberOf" attribute
+        """
+        attributes = [i for i in self._userNameAttr.split(',') + [self._userIdAttr]]
+        # if self._mfaAttr:
+        #     attributes = attributes + [self._mfaAttr]
+
+        return ldaputil.getFirst(
+            con=self.__connection(),
+            base=self._ldapBase,
+            objectClass=self._userClass,
+            field=self._userIdAttr,
+            value=username,
+            attributes=attributes,
+            sizeLimit=LDAP_RESULT_LIMIT,
+        )
+
+    def __getGroup(self, groupName: str) -> typing.Optional[ldaputil.LDAPResultType]:
+        """
+        Searchs for the groupName and returns its LDAP entry
+        @param groupName: group name to search, using user provided parameters at configuration to map search entries.
+        @return: None if group name is not found, an dictionary of LDAP entry attributes if found.
+        """
+        return ldaputil.getFirst(
+            con=self.__connection(),
+            base=self._ldapBase,
+            objectClass=self._groupClass,
+            field=self._groupIdAttr,
+            value=groupName,
+            attributes=[self._memberAttr],
+            sizeLimit=LDAP_RESULT_LIMIT,
+        )
+
+    def __getGroups(self, user: ldaputil.LDAPResultType):
+        try:
+            groups: typing.List[str] = []
+
+            filter_ = '(&(objectClass=%s)(|(%s=%s)(%s=%s)))' % (
+                self._groupClass,
+                self._memberAttr,
+                user['_id'],
+                self._memberAttr,
+                user['dn'],
+            )
+            for d in ldaputil.getAsDict(
+                con=self.__connection(),
+                base=self._ldapBase,
+                ldapFilter=filter_,
+                attrList=[self._groupIdAttr],
+                sizeLimit=10 * LDAP_RESULT_LIMIT,
+            ):
+                if self._groupIdAttr in d:
+                    for k in d[self._groupIdAttr]:
+                        groups.append(k)
+
+            logger.debug('Groups: %s', groups)
+            return groups
+
+        except Exception:
+            logger.exception('Exception at __getGroups')
+            return []
+        
+    def __getUserRealName(self, usr: ldaputil.LDAPResultType) -> str:
+        '''
+        Tries to extract the real name for this user. Will return all atttributes (joint)
+        specified in _userNameAttr (comma separated).
+        '''
+        return ' '.join(
+            [
+                ' '.join((str(k) for k in usr.get(id_, '')))
+                if isinstance(usr.get(id_), list)
+                else str(usr.get(id_, ''))
+                for id_ in self._userNameAttr.split(',')
+            ]
+        ).strip()
+
+    def authCallback(
+        self,
+        parameters: dict[str, typing.Any],
+        gm: 'auths.GroupsManager',
+        request: 'ExtendedHttpRequestWithUser',
+    ) -> typing.Optional[str]:
+        logger.debug('Kerberos auth callback')
+        logger.debug('headers: %s', request.session['auth_token'])
+        token = base64.b64decode(request.session.get('auth_token'))
+        server_cred = self.__get_credentials(usage='accept')
+        logger.debug('cred name: %s', str(server_cred.name))
+        ctx = gssapi.SecurityContext(creds=server_cred, usage='accept')
+
+        # Feed the input token to the context, and get an output token in return
+        try:
+            out_token = ctx.step(token)
+        except Exception as e:
+            raise auths.exceptions.InvalidAuthenticatorException('Kerberos authentication error: ' + e)
+        
+        username = str(ctx.initiator_name).split('@')[0]
+        logger.debug('Username: %s', username)
+        
+        if out_token and ctx.complete:
+            del request.session['auth_token']
+            self.getGroups(username, gm)
+            return username
+        else:
+            return
+
+    def createUser(self, usrData: typing.Dict[str, str]) -> None:
+        '''
+        Groups are only used in case of internal users (non external sources) that must know to witch groups this user belongs to
+        @param usrData: Contains data received from user directly, that is, a dictionary with at least: name, realName, comments, state & password
+        @return:  Raises an exception (AuthException) it things didn't went fine
+        '''
+        res = self.__getUser(usrData['name'])
+        if res is None:
+            raise auths.exceptions.AuthenticatorException(_('Username not found'))
+        # Fills back realName field
+        usrData['real_name'] = self.__getUserRealName(res)
+
+    def getRealName(self, username: str) -> str:
+        '''
+        Tries to get the real name of an user
+        '''
+        res = self.__getUser(username)
+        if res is None:
+            return username
+        return self.__getUserRealName(res)
+
+    def modifyUser(self, usrData: typing.Dict[str, str]) -> None:
+        '''
+        We must override this method in authenticators not based on external sources (i.e. database users, text file users, etc..)
+        Modify user has no reason on external sources, so it will never be used (probably)
+        Groups are only used in case of internal users (non external sources) that must know to witch groups this user belongs to
+        @param usrData: Contains data received from user directly, that is, a dictionary with at least: name, realName, comments, state & password
+        @return:  Raises an exception it things don't goes fine
+        '''
+        return self.createUser(usrData)
+
+    def createGroup(self, groupData: typing.Dict[str, str]) -> None:
+        '''
+        We must override this method in authenticators not based on external sources (i.e. database users, text file users, etc..)
+        External sources already has its own groups and, at most, it can check if it exists on external source before accepting it
+        Groups are only used in case of internal users (non external sources) that must know to witch groups this user belongs to
+        @params groupData: a dict that has, at least, name, comments and active
+        @return:  Raises an exception it things don't goes fine
+        '''
+        res = self.__getGroup(groupData['name'])
+        if res is None:
+            raise auths.exceptions.AuthenticatorException(_('Group not found'))
+
+    def getGroups(self, username: str, groupsManager: 'auths.GroupsManager'):
+        '''
+        Looks for the real groups to which the specified user belongs
+        Updates groups manager with valid groups
+        Remember to override it in derived authentication if needed (external auths will need this, for internal authenticators this is never used)
+        '''
+        user = self.__getUser(username)
+        if user is None:
+            raise auths.exceptions.AuthenticatorException(_('Username not found'))
+        groupsManager.validate(self.__getGroups(user))
+
+    def searchUsers(self, pattern: str) -> typing.Iterable[typing.Dict[str, str]]:
+        try:
+            res = []
+            for r in ldaputil.getAsDict(
+                con=self.__connection(),
+                base=self._ldapBase,
+                ldapFilter='(&(objectClass=%s)(%s=%s*))'
+                % (self._userClass, self._userIdAttr, pattern),
+                attrList=[self._userIdAttr, self._userNameAttr],
+                sizeLimit=LDAP_RESULT_LIMIT,
+            ):
+                res.append(
+                    {
+                        'id': r[self._userIdAttr][0],  # Ignore @...
+                        'name': self.__getUserRealName(r),
+                    }
+                )
+
+            return res
+        except Exception:
+            logger.exception("Exception: ")
+            raise auths.exceptions.AuthenticatorException(
+                _('Too many results, be more specific')
+            )
+
+    def searchGroups(self, pattern: str) -> typing.Iterable[typing.Dict[str, str]]:
+        try:
+            res = []
+            for r in ldaputil.getAsDict(
+                con=self.__connection(),
+                base=self._ldapBase,
+                ldapFilter='(&(objectClass=%s)(%s=%s*))'
+                % (self._groupClass, self._groupIdAttr, pattern),
+                attrList=[self._groupIdAttr, 'memberOf', 'description'],
+                sizeLimit=LDAP_RESULT_LIMIT,
+            ):
+                res.append({'id': r[self._groupIdAttr][0], 'name': r['description'][0]})
+
+            return res
+        except Exception:
+            logger.exception("Exception: ")
+            raise auths.exceptions.AuthenticatorException(
+                _('Too many results, be more specific')
+            )
+
+    def getJavascript(self, request: 'ExtendedHttpRequest') -> typing.Optional[str]:
+        auth_name = self._dbAuth.name
+        link = reverse('page.auth.kerberos', kwargs={'authName': auth_name})
+        return f'window.location="{link}";'
+
+    @staticmethod
+    def test(env, data) -> typing.List[typing.Any]:
+        try:
+            auth = KerberosAuthenticator(None, env, data)  # type: ignore
+            return auth.testConnection()
+        except Exception as e:
+            logger.error("Exception found testing Kerberos auth: %s", e)
+            return [False, "Error testing connection"]
+        
+    def testConnection(self):
+        try:
+            con = self.__connection()
+        except Exception as e:
+            return [False, str(e)]
+
+        try:
+            con.search_s(base=self._ldapBase, scope=ldap.SCOPE_BASE)  # type: ignore   # ldap.SCOPE_* not resolved due to dynamic creation?
+        except Exception:
+            return [False, _('Ldap search base is incorrect')]
+
+        try:
+            if (
+                len(
+                    con.search_ext_s(
+                        base=self._ldapBase,
+                        scope=ldap.SCOPE_SUBTREE,  # type: ignore   # ldap.SCOPE_* not resolved due to dynamic creation?
+                        filterstr='(objectClass=%s)' % self._userClass,
+                        sizelimit=1,
+                    )
+                )
+                == 1
+            ):
+                raise Exception()
+            return [
+                False,
+                _(
+                    'Ldap user class seems to be incorrect (no user found by that class)'
+                ),
+            ]
+        except Exception:
+            # If found 1 or more, all right
+            pass
+
+        # Now test objectclass and attribute of users
+        try:
+            if (
+                len(
+                    con.search_ext_s(
+                        base=self._ldapBase,
+                        scope=ldap.SCOPE_SUBTREE,  # type: ignore   # ldap.SCOPE_* not resolved due to dynamic creation?
+                        filterstr='(&(objectClass=%s)(%s=*))'
+                        % (self._userClass, self._userIdAttr),
+                        sizelimit=1,
+                    )
+                )
+                == 1
+            ):
+                raise Exception()
+            return [
+                False,
+                _(
+                    'Ldap user id attr is probably wrong (can\'t find any user with both conditions)'
+                ),
+            ]
+        except Exception:
+            # If found 1 or more, all right
+            pass
+
+        for grpNameAttr in self._groupNameAttr.split('\n'):
+            vals = grpNameAttr.split('=')[0]
+            if vals == 'dn':
+                continue
+            try:
+                if (
+                    len(
+                        con.search_ext_s(
+                            base=self._ldapBase,
+                            scope=ldap.SCOPE_SUBTREE,  # type: ignore   # ldap.SCOPE_* not resolved due to dynamic creation?
+                            filterstr='(%s=*)' % vals,
+                            sizelimit=1,
+                        )
+                    )
+                    == 1
+                ):
+                    continue
+            except Exception:
+                continue
+            return [
+                False,
+                _(
+                    'Ldap group id attribute seems to be incorrect (no group found by that attribute)'
+                ),
+            ]
+
+        # Now try to test regular expression to see if it matches anything (
+        try:
+            # Check the existence of at least a () grouping
+            # Check validity of regular expression (try to compile it)
+            # this only right now
+            pass
+        except Exception:
+            pass
+        
+        return [True, _("Connection params seem correct, test was succesfully executed")]
