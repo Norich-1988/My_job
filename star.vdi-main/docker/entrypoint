@@ -1,0 +1,118 @@
+#!/bin/bash
+set -e
+echo "$(date '+%F %T.%2N') Starting HVDI VERSION:2.0.2:250923"
+echo "" > /run/vdipid
+export PGDATA=/var/lib/postgresql/data
+export PGPASSWORD=horizon
+export TZ=Europe/Moscow
+
+
+# trap initialization
+################################################################################
+trap 'stop_services' TERM INT
+
+stop_services() {
+    echo "INFO: Stop signal received. Stopping services"
+    python /svdi/server/src/manage.py taskManager --stop
+    echo "INFO: Task Manager stopped"
+    pkill lighttpd
+    echo "INFO: Lighttpd stopped"
+    pkill gunicorn
+    echo "INFO: Gunicorn stopped"
+    su postgres -c "pg_ctl stop" && echo "INFO: Postgresql stopped"
+}
+
+##################### end trap initialization ##################################
+
+
+# prepare for launch
+################################################################################
+
+# generate secret key
+if [ ! -f "/svol/license/KEY" ]; then
+    # Run the secret key generator script
+    python -u /svol/license/gen_key.py
+fi
+
+
+SOURCE_FILE="/svol/hosts"
+DEST_FILE="/etc/hosts"
+if [ -f "$SOURCE_FILE" ]; then
+    echo "Восстановление $SOURCE_FILE в $DEST_FILE..."
+    if cp "$SOURCE_FILE" "$DEST_FILE"; then
+        echo "Файл hosts восстановлен."
+    fi
+fi
+
+# touch log files
+if [ ! -f "/svdi/server/log/vdi.log" ]; then
+    echo "INFO: Creating logs"
+    touch /svdi/server/log/auth.log
+    touch /svdi/server/log/services.log
+    touch /svdi/server/log/sql.log
+    touch /svdi/server/log/trace.log
+    touch /svdi/server/log/vdi.log
+    touch /svdi/server/log/use.log
+    touch /svdi/server/log/workers.log 
+fi
+
+# change owners and perms
+chown -R postgres:postgres /svol/postgresql
+chown -R lighttpd:lighttpd /svol/log
+
+#Regular start of postgres
+if [ -f "$PGDATA/PG_VERSION" ] && [ -z "$DBHOST" ]; then
+    echo "INFO: Starting Postgresql"
+    su postgres -c "pg_ctl start -l $PGDATA/postgres.log -s" &
+    sleep 5
+    echo "INFO: Postgresql launched"
+fi
+
+# First DB init and vdi database creation
+if [ ! -f "$PGDATA/PG_VERSION" ] && [ -z "$DBHOST" ]; then
+    echo "INFO: Initializing Database"
+    su postgres -c 'initdb --auth=scram-sha-256 --encoding=UTF8 --pwfile=<(printf "%s\n" "$PGPASSWORD")'
+    echo "INFO: Database initialized"
+    su postgres -c "pg_ctl start -l $PGDATA/postgres.log -s" &
+    echo "INFO: Postgresql launched"
+    sleep 2
+    psql --username postgres --no-password -c "CREATE DATABASE vdi;"
+    echo "INFO: Created database vdi"
+    sleep 2
+fi
+
+echo "INFO: Bootstrap Database"
+python /svdi/server/src/manage.py makemigrations vdi
+python /svdi/server/src/manage.py migrate vdi > /dev/null
+python /svdi/server/src/manage.py migrate sessions > /dev/null
+python /svdi/server/src/manage.py createcachetable > /dev/null
+python /svdi/server/src/manage.py collectstatic --noinput > /dev/null
+chown -R lighttpd:lighttpd /svdi/server/
+echo "WARNING: use default STAR.VDI credentials"
+
+echo "INFO: Finished initialization"
+   
+##################### end prepare for launch ###################################
+
+
+# launch daemons
+################################################################################
+
+sleep 2
+cd /svdi/server/src/ && gunicorn --reload --pid /run/vdipid --bind unix:/run/vdisocket server.wsgi --workers 5 --threads 8 --log-file /svdi/server/log/gunicorn.log -D
+echo "INFO: Gunicorn launched"
+
+lighttpd -f /etc/lighttpd/lighttpd.conf
+echo "INFO: Lighttpd launched"
+
+python /svdi/server/src/manage.py taskManager --start
+echo "INFO: Task Manager launched"
+echo "INFO: Now you can use star.vdi!!!"
+
+##################### end launch daemons #######################################
+
+
+# working and waiting for exit 
+################################################################################
+sleep infinity &
+wait $!
