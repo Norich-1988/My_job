@@ -1,0 +1,16 @@
+{
+
+    "guacamoleVersion" : "1.2.0",
+
+    "name"      : "VDI Integration Extension for Apache Guacamole",
+    "namespace" : "vdi",
+
+    "authProviders" : [
+        "org.openvdi.guacamole.VDIAuthenticationProvider"
+    ],
+
+    "translations" : [
+        "translations/en.json"
+    ]
+
+}
