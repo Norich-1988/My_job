@@ -1,0 +1,1162 @@
+openapi: '3.0.2'
+info:
+  title: VDI API
+  version: '1.0'
+servers:
+  - url: /vdi/rest
+paths:
+  /auth/auths:
+    get:
+      summary: Получение списка аутентификаторов для логина
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    authId:
+                      type: string
+                      format: uuid
+                    authSmallName:
+                      type: string
+                    auth:
+                      type: string
+                    type:
+                      type: string
+                    priority:
+                      type: integer
+                      format: int64
+                      minimum: 1
+                    isCustom:
+                      type: boolean
+                      default: false
+  /auth/login:
+    post:
+      summary: Авторизация пользователя
+      requestBody:
+        description: Логин и пароль для авторизации
+        required: true
+        content:
+          application/json:
+            schema:
+              anyOf:
+                - type: object
+                  properties:
+                    username:
+                      type: string
+                    password:
+                      type: string
+                      format: password
+                    auth:
+                      type: string
+                - type: object
+                  properties:
+                    username:
+                      type: string
+                    password:
+                      type: string
+                      format: password
+                    authId:
+                      type: string
+                      format: uuid
+                - type: object
+                  properties:
+                    username:
+                      type: string
+                    password:
+                      type: string
+                      format: password
+                    authSmallName:
+                      type: string
+      responses:
+        '200':
+          description: Результат авториации
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: string
+                  token:
+                    type: string
+                  version:
+                    type: string
+                  error:
+                    type: string
+  /auth/logout:
+    get:
+      summary: Выход из системы
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: string
+                    example:
+                      ok
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+    post:
+      summary: Выход из системы
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  result:
+                    type: string
+                    example:
+                      ok
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+  /authenticators:
+    get:
+      summary: Список аутентификаторов
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Authenticator'
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+    put:
+      summary: Создание аутентификатора
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Authenticator'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Authenticator'
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+  /authenticators/{authId}:
+    get:
+      summary: Информация об аутентификаторе
+      parameters:
+      - name: authId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Authenticator'
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+    put:
+      summary: Редактирование аутентификатора
+      parameters:
+      - name: authId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Authenticator'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Authenticator'
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+  /mfa:
+    get:
+      summary: Список MFA
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MFA'
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+    put:
+      summary: Создание MFA
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MFA'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MFA'
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+  /mfa/{mfaId}:
+    get:
+      summary: Информация о MFA
+      parameters:
+      - name: mfaId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MFA'
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+    put:
+      summary: Редактирование MFA
+      parameters:
+      - name: mfaId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MFA'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MFA'
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+  /osmanagers:
+    get:
+      summary: Список менеджеров ОС
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/OSManager'
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+    put:
+      summary: Создание менеджера ОС
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OSManager'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OSManager'
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+  /osmanagers/{osmId}:
+    get:
+      summary: Информация о менеджере ОС
+      parameters:
+      - name: osmId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OSManager'
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+    put:
+      summary: Редактирование менеджера ОС
+      parameters:
+      - name: osmId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OSManager'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/OSManager'
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+  /providers:
+    get:
+      summary: Список поставщиков услуг
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Provider'
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+    put:
+      summary: Создание поставщика услуг
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Provider'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Provider'
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+  /providers/{providerId}:
+    get:
+      summary: Информация о поставщике услуг
+      parameters:
+      - name: providerId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Provider'
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+    put:
+      summary: Редактирование поставщика услуг
+      parameters:
+      - name: providerId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Provider'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Provider'
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+  /servicespools:
+    get:
+      summary: Список пулов услуг
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ServicePool'
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+    put:
+      summary: Создание пула услуг
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServicePool'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServicePool'
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+  /providers/{spoolId}:
+    get:
+      summary: Информация о пуле услуг
+      parameters:
+      - name: spoolId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServicePool'
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+    put:
+      summary: Редактирование пула услуг
+      parameters:
+      - name: spoolId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ServicePool'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ServicePool'
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+  /transports:
+    get:
+      summary: Список поставщиков услуг
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Transport'
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+    put:
+      summary: Создание транспорта
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Transport'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transport'
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+  /transports/{transportId}:
+    get:
+      summary: Информация о транспорте
+      parameters:
+      - name: transportId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transport'
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+    put:
+      summary: Редактирование транспорта
+      parameters:
+      - name: transportId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Transport'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Transport'
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+  /system/overview:
+    get:
+      summary: Общая информация о системе
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: integer
+                    example: 15
+                  groups:
+                    type: integer
+                    example: 3
+                  services:
+                    type: integer
+                    example: 2
+                  service_pools:
+                    type: integer
+                    example: 4
+                  meta_pools:
+                    type: integer
+                    example: 1
+                  user_services:
+                    type: integer
+                    example: 2
+                  restrained_services_pools:
+                    type: integer
+                    example: 0
+        '403':
+          $ref: '#/components/responses/403'
+      security:
+        - vdi_auth: []
+  /version:
+    get:
+      summary: Версия VDI
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: string
+                  build:
+                    type: string
+components:
+  schemas:
+    Authenticator:
+      type: object
+      properties:
+        numeric_id:
+          type: integer
+          readOnly: true
+        id:
+          type: string
+          readOnly: true
+          format: uuid
+        data_type:
+          type: string
+          writeOnly: true
+        name:
+          type: string
+          example: Auth name
+        tags:
+          type: array
+          items:
+            type: string
+        comments:
+          type: string
+        priority:
+          type: integer
+        mfa_id:
+          type: integer
+          example: 1
+        mfa_name:
+          type: string
+          example: MFA name
+          readOnly: true
+        visible:
+          type: boolean
+          default: true
+        small_name:
+          type: string
+        users_count:
+          type: integer
+          readOnly: true
+        type:
+          type: string
+          readOnly: true
+          example: InternalDBAuth
+        type_name:
+          type: string
+          readOnly: true
+          example: Внутренняя БД
+        type_info:
+          type: object
+          readOnly: true
+          properties:
+            canSearchUsers:
+              type: boolean
+            canSearchGroups:
+              type: boolean
+            needsPassword:
+              type: boolean
+            userNameLabel:
+              type: string
+            groupNameLabel:
+              type: string
+            passwordLabel:
+              type: string
+            canCreateUsers:
+              type: boolean
+            isExternal:
+              type: boolean
+            supportsMFA:
+              type: boolean
+        permissions:
+          type: integer
+          readOnly: true
+          minimum: 0
+          maximum: 96
+    MFA:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        name:
+          type: string
+          example: MFA name
+        remember_device:
+          type: integer
+        validity:
+          type: integer
+          example: 5
+        tags:
+          type: array
+          items:
+            type: string
+        comments:
+          type: string
+        type:
+          type: string
+          example: TOTP_MFA
+        type_name:
+          type: string
+          example: МФА на основе TOTP
+        permission:
+          type: integer
+          readOnly: true
+          minimum: 0
+          maximum: 96
+    OSManager:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        name:
+          type: string
+          example: Linux OS Manager
+        tags:
+          type: array
+          items:
+            type: string
+        deployed_count:
+          type: integer
+        type:
+          type: string
+          example: LinuxManager
+        type_name:
+          type: string
+          example: Linux ОС менеджер
+        servicesTypes:
+          type: array
+          items:
+            type: string
+        comments:
+          type: string
+        permission:
+          type: integer
+    Provider:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        name:
+          type: string
+          example: Provider name
+        tags:
+          type: array
+          items:
+            type: string
+        services_count:
+          type: integer
+          example: 1
+        user_services_count:
+          type: integer
+          example: 2
+        maintenance_mode:
+          type: boolean
+          example: false
+        offers:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+                example: Действующие образы HVS
+              type:
+                type: string
+                example: openNebulaLiveService
+              description:
+                type: string
+                example: Сервис на основе реальных образов HVS
+              icon:
+                type: string
+        type:
+          type: string
+          example: HVSPlatform
+        type_name:
+          type: string
+          example: Поставщик платформы HVS
+        comments:
+          type: string
+        permission:
+          type: integer
+          readOnly: true
+          minimum: 0
+          maximum: 96
+    Service:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        name:
+          type: string
+          example: Service name
+        tags:
+          type: array
+          items:
+            type: string
+        comments:
+          type: string
+        type:
+          type: string
+          example: openNebulaLiveService
+        type_name:
+          type: string
+          example: Действующие образы HVS
+        proxy_id:
+          type: integer
+          minimum: -1
+          example: -1
+        proxy:
+          type: string
+        deployed_services_count:
+          type: integer
+          example: 1
+        user_services_count:
+          type: integer
+          example: 3
+        maintenance_mode:
+          type: boolean
+          example: false
+        permission:
+          type: integer
+          readOnly: true
+          minimum: 0
+          maximum: 96
+    ServicePool:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        name:
+          type: string
+          example: ServicePool name
+        short_name:
+          type: string        
+        tags:
+          type: array
+          items:
+            type: string
+        parent:
+          type: string
+        parent_type:
+          type: string
+          example: openNebulaLiveService
+        comments:
+          type: string
+        state:
+          type: string
+          example: A
+        thumb:
+          type: string
+        account:
+          type: string
+        account_id:
+          type: string
+          format: uuid
+          example: null
+        service_id:
+          type: string
+          format: uuid
+        provider_id:
+          type: string
+          format: uuid
+        image_id:
+          type: string
+          format: uuid
+        initial_srvs:
+          type: integer
+          minimum: 0
+          default: 0
+          example: 2
+        cache_l1_srvs:
+          type: integer
+          minimum: 0
+          example: 2
+        cache_l2_srvs:
+          type: integer
+          minimum: 0
+          example: 1
+        max_srvs:
+          type: integer
+          minimum: 0
+          example: 10
+        show_transports:
+          type: boolean
+          example: true
+        visible:
+          type: boolean
+          example: true
+        allow_users_remove:
+          type: boolean
+          example: false
+        allow_users_reset:
+          type: boolean
+          example: false
+        ignores_unused:
+          type: boolean
+          example: false
+        fallbackAccess:
+          type: string
+          example: ALLOW
+        meta_member:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+              name:
+                type: string
+        calendar_message:
+          type: string
+        user_services_count:
+          type: integer
+          minimum: 0
+          example: 2
+        user_services_in_preparation:
+          type: integer
+          minimum: 0
+          example: 0
+        restrained:
+          type: boolean
+          example: false
+        permission:
+          type: integer
+          readOnly: true
+          minimum: 0
+          maximum: 96
+        info:
+          type: object
+          properties:
+            icon:
+              type: string
+            needs_publication:  
+              type: boolean
+              example: true
+            max_deployed:
+              type: integer
+              minimum: -1
+              example: -1
+            uses_cache:
+              type: boolean
+              example: true
+            uses_cache_l2:
+              type: boolean
+              example: true
+            cache_tooltip:
+              type: string
+            cache_tooltip_l2:
+              type: string
+            needs_manager:
+              type: boolean
+              example: true
+            allowedProtocols:
+              type: array
+              items:
+                type: string
+            servicesTypeProvided:
+              type: array
+              items:
+                type: string
+            must_assign_manually:
+              type: boolean
+            can_reset:
+              type: boolean
+            can_list_assignables:
+              type: boolean
+        pool_group_id:
+          type: string
+          format: uuid
+          example: null
+        pool_group_name:
+          type: string
+          example: По умолчанию
+        pool_group_thumb:
+          type: string
+        usage:
+          type: string
+          example: 50%
+        osmanager_id:
+          type: string
+          format: uuid
+    Transport:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        name:
+          type: string
+          example: Transport name
+        tags:
+          type: array
+          items:
+            type: string
+        comments:
+          type: string
+        priority:
+          type: integer
+          example: 1
+        nets_positive:
+          type: boolean
+          example: true
+        label:
+          type: string
+        networks:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+        allowed_oss:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+        pools:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+                format: uuid
+        pools_count:
+          type: integer
+          example: 1
+        deployed_count:
+          type: integer
+          example: 2
+        type:
+          type: string
+          example: SPICETransport
+        type_name:
+          type: string
+          example: SPICE
+        protocol:
+          type: string
+          example: spice
+        permission:
+          type: integer
+          readOnly: true
+          minimum: 0
+          maximum: 96
+  responses:
+    '403':
+      description: Доступ запрещен
+      content:
+        text/plain:
+          schema:
+            type: string
+            example: access denied
+    '404':
+      description: Элемент не найден
+      content:
+        text/plain:
+          schema:
+            type: string
+            example: Элемент не найден
+  securitySchemes:
+    vdi_auth:
+      type: apiKey
+      in: header
+      name: X-Auth-Token
+      description: Авторизация пользователя
